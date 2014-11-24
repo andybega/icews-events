@@ -1,0 +1,101 @@
+---
+title: "Quad variables"
+author: "Andreas Beger"
+date: "November 24, 2014"
+output: html_document
+---
+
+
+```{r, eval=FALSE}
+sqlList <- function(char.vector) {
+  # Format as SQL char list
+	paste0("('", paste(char.vector, collapse="', '"), "')")
+}
+
+quadEvents <- function(cameo.codes, source.sector, target.sector) {
+	# Gets relevant event counts for quad category from db table for 
+	# relevant sector interactions, e.g. gov to gov.
+	sql <- paste0("
+SELECT c.cowcode,
+       Extract(YEAR_MONTH FROM s.event_date) AS date,
+       count(*) AS events
+FROM   simple_events s
+JOIN   eventtypes t USING(eventtype_id)
+JOIN   locations l USING(location_id)
+JOIN   countries c ON c.id = l.country_id
+WHERE  s.event_date >= '2001-02-01' 
+  AND  Substring(t.code, 1, 2) IN ", cameo.codes, "
+  AND  s.source_country_id = s.target_country_id
+  AND  s.source_actor_id IN
+       (SELECT dsm.actor_id
+        FROM   dict_sector_mappings dsm
+        JOIN   dict_sectors ds USING(sector_id)
+        WHERE  ds.sector_type_id = ", source.sector, ")
+  AND  s.target_actor_id IN
+       (SELECT dsm.actor_id
+        FROM   dict_sector_mappings dsm
+        JOIN   dict_sectors ds USING(sector_id)
+        WHERE  ds.sector_type_id = ", target.sector, ")
+GROUP  BY c.cowcode, Extract(YEAR_MONTH FROM s.event_date);")
+	res <- dbGetQuery(conn, sql)
+	res$date <- as.Date(paste0(as.character(res$date), "01"), 
+		format="%Y%m%d")
+	return(res)
+}
+
+icewsToGW <- function(data) {
+	# Fix ICEWS country codes for merge to G&W codes.
+	# Only works post 2001-03
+	cond <- data$cowcode==995 & data$date >= as.Date("2006-06-05")
+	data$cowcode[cond] <- 340  # Serbia
+	cond <- data$cowcode==995 & data$date < as.Date("2006-06-05")
+	data$cowcode[cond] <- 345  # Serbian & Montenegro
+	data$cowcode[data$cowcode==255] <- 260  # Germany
+	data$cowcode[data$cowcode==679] <- 678  # Yemen
+	data$cowcode[data$cowcode==994] <- 626  # South Sudan
+
+	return(data)
+}
+
+getIcewsQuad <- function(quad, source.sector, target.sector) {
+	# quad: verb.coop, verb.conf, matl.coop, matl.confl
+	# sector: government, ethnic, religious, business
+	if (!exists("conn")) stop("No MySQL connection ('conn')")
+
+	# Get SQL list of roots codes for quad category
+	quad.root.codes <- list(	
+		verb.coop="('01', '02', '03', '04', '05')",
+		matl.coop="('06', '07', '08')",
+		verb.conf="('09', '10', '11', '12', '13')",
+		matl.conf="('14', '15', '16', '17', '18', '19', '20')"
+	)
+	cameo.codes <- quad.root.codes[[quad]]
+
+	# Get source sector type
+	sector.types <- list(rel=1, gov=2, dis=3, bus=4, oth=5)
+	source.sector.code <- sector.types[[source.sector]]
+	target.sector.code <- sector.types[[target.sector]]
+
+	# Get counts from DB
+	counts <- quadEvents(cameo.codes, source.sector.code, target.sector.code)
+
+	# Fix ccodes
+	counts <- icewsToGW(counts)
+
+	# Lag by 1 month
+	require(lubridate)
+	month(counts$date) <- month(counts$date) + 1
+
+	# Prepare data for merge
+	counts$id <- paste(counts$date, counts$cowcode)
+	counts <- counts[, c("id", "events")]
+	colnames(counts)[2] <- paste0("i.", quad, ".", toupper(source.sector), "t", 
+		toupper(target.sector), ".l1")
+
+	return(counts)
+}
+```
+
+```{r}
+df <- getIcewsQuad("verb.coop", "gov", "gov")
+```
