@@ -9,6 +9,12 @@ output: html_document
 
 Monthly counts, by country, of verbal conflict, material conflict, verbal cooperation, and material cooperation events. The output includes a correction to match the G\&W state system membership codes.
 
+Depends: 
+```{r, eval=FALSE}
+library(RMySQL)
+conn <- <active connection to db>
+```
+
 ```{r, eval=FALSE}
 sqlList <- function(char.vector) {
   # Format as SQL char list
