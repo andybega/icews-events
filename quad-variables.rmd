@@ -5,6 +5,9 @@ date: "November 24, 2014"
 output: html_document
 ---
 
+# Quad variables
+
+Monthly counts, by country, of verbal conflict, material conflict, verbal cooperation, and material cooperation events. The output includes a correction to match the G\&W state system membership codes.
 
 ```{r, eval=FALSE}
 sqlList <- function(char.vector) {
@@ -95,6 +98,8 @@ getIcewsQuad <- function(quad, source.sector, target.sector) {
 	return(counts)
 }
 ```
+
+Example call:
 
 ```{r}
 df <- getIcewsQuad("verb.coop", "gov", "gov")
