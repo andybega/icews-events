@@ -1,0 +1,444 @@
+---
+title: "ICEWS quad query problem with date-specific actor-sector mappings"
+author: "Andreas Beger"
+date: "September 9, 2016"
+output: 
+  html_document:
+    #highlight: pygments
+---
+
+```{r setup, include = FALSE}
+library("knitr")
+opts_chunk$set(eval = FALSE)
+```
+
+The existing ICEWS quad category counts query I have up here has a problem. It deals with `dict_sector_mappings` as if one actor only has one corresponding sector, but this is actually not the case. Actors can switch sectors over time, or belong to multiple sectors at the same time. 
+
+Here are some notes looking into the problem. There is no (reasonable) solution, but this is as far as I got. 
+
+Ok, what does this look like?
+
+```{mysql}
+SELECT  actor_id, sector_id, sector_type_id, start_date, end_date
+FROM    dict_sector_mappings
+JOIN    dict_sectors USING (sector_id)
+LIMIT   20;
+```
+
+```
++----------+-----------+----------------+------------+------------+
+| actor_id | sector_id | sector_type_id | start_date | end_date   |
++----------+-----------+----------------+------------+------------+
+|        1 |        85 |              4 | NULL       | NULL       |
+|        1 |        97 |              4 | NULL       | NULL       |
+|        3 |        28 |              2 | NULL       | 1998-10-13 |
+|        3 |        28 |              2 | 2001-02-09 | 2004-03-09 |
+|        3 |        28 |              2 | 2004-03-10 | 2006-09-19 |
+|        3 |        57 |              2 | 2001-02-09 | 2004-03-09 |
+|        3 |        57 |              2 | 2004-03-10 | 2006-09-19 |
+|        3 |       100 |              3 | 2006-09-19 | 2007-12-23 |
+|        3 |       207 |              2 | NULL       | NULL       |
+|        3 |       208 |              2 | NULL       | NULL       |
+|        3 |       209 |              2 | NULL       | NULL       |
+|        3 |       242 |              2 | NULL       | 1998-10-13 |
+|        3 |       262 |              1 | 2004-03-10 | 2004-10-06 |
+|        3 |       267 |              5 | 2004-03-10 | 2004-10-06 |
+|        3 |       278 |              5 | 2001-02-09 | 2004-03-09 |
+|        3 |       280 |              5 | 2004-03-10 | NULL       |
+|        3 |       293 |              5 | 2004-03-10 | 2006-09-19 |
+|        3 |       552 |              3 | 2006-09-19 | 2007-12-23 |
+|        5 |        28 |              2 | 2004-11-01 | 2008-10-31 |
+|        5 |        57 |              2 | 2004-11-01 | 2008-10-31 |
++----------+-----------+----------------+------------+------------+
+20 rows in set (0.14 sec)
+```
+
+## Work towards query that will match 1 actor to all sector types at event date
+
+Focus on one event only. Then build up a query that joins the actor-sector mapping with dates to the event:
+
+```{mysql}
+SELECT event_date, source_actor_id, dsm.sector_id, ds.sector_type_id, dsm.start_date, dsm.end_date
+FROM   simple_events se
+JOIN   dict_sector_mappings dsm ON dsm.actor_id = se.source_actor_id
+JOIN   dict_sectors ds ON ds.sector_id = dsm.sector_id
+WHERE  event_id = 7106109
+LIMIT  20;
+```
+
+```
++------------+-----------------+-----------+----------------+------------+------------+
+| event_date | source_actor_id | sector_id | sector_type_id | start_date | end_date   |
++------------+-----------------+-----------+----------------+------------+------------+
+| 2004-03-23 |               3 |        28 |              2 | NULL       | 1998-10-13 |
+| 2004-03-23 |               3 |        28 |              2 | 2001-02-09 | 2004-03-09 |
+| 2004-03-23 |               3 |        28 |              2 | 2004-03-10 | 2006-09-19 |
+| 2004-03-23 |               3 |        57 |              2 | 2001-02-09 | 2004-03-09 |
+| 2004-03-23 |               3 |        57 |              2 | 2004-03-10 | 2006-09-19 |
+| 2004-03-23 |               3 |       100 |              3 | 2006-09-19 | 2007-12-23 |
+| 2004-03-23 |               3 |       207 |              2 | NULL       | NULL       |
+| 2004-03-23 |               3 |       208 |              2 | NULL       | NULL       |
+| 2004-03-23 |               3 |       209 |              2 | NULL       | NULL       |
+| 2004-03-23 |               3 |       242 |              2 | NULL       | 1998-10-13 |
+| 2004-03-23 |               3 |       262 |              1 | 2004-03-10 | 2004-10-06 |
+| 2004-03-23 |               3 |       267 |              5 | 2004-03-10 | 2004-10-06 |
+| 2004-03-23 |               3 |       278 |              5 | 2001-02-09 | 2004-03-09 |
+| 2004-03-23 |               3 |       280 |              5 | 2004-03-10 | NULL       |
+| 2004-03-23 |               3 |       293 |              5 | 2004-03-10 | 2006-09-19 |
+| 2004-03-23 |               3 |       552 |              3 | 2006-09-19 | 2007-12-23 |
++------------+-----------------+-----------+----------------+------------+------------+
+16 rows in set (0.14 sec)
+```
+
+Refine the join to match the event date to the sector dates. Assumes that NULL means a left or righ open ended date, e.g. "still currently part of that sector".
+
+```{mysql}
+SELECT event_date, source_actor_id, dsm.sector_id, ds.sector_type_id,
+       dsm.start_date, dsm.end_date
+FROM   simple_events se
+JOIN   dict_sector_mappings dsm ON dsm.actor_id = se.source_actor_id AND (dsm.start_date <= se.event_date OR dsm.start_date IS NULL) AND (dsm.end_date >= se.event_date OR dsm.end_date IS NULL)
+JOIN   dict_sectors ds ON ds.sector_id = dsm.sector_id
+WHERE  event_id = 7106109
+LIMIT  10;
+```
+
+```
++------------+-----------------+-----------+----------------+------------+------------+
+| event_date | source_actor_id | sector_id | sector_type_id | start_date | end_date   |
++------------+-----------------+-----------+----------------+------------+------------+
+| 2004-03-23 |               3 |        28 |              2 | 2004-03-10 | 2006-09-19 |
+| 2004-03-23 |               3 |        57 |              2 | 2004-03-10 | 2006-09-19 |
+| 2004-03-23 |               3 |       207 |              2 | NULL       | NULL       |
+| 2004-03-23 |               3 |       208 |              2 | NULL       | NULL       |
+| 2004-03-23 |               3 |       209 |              2 | NULL       | NULL       |
+| 2004-03-23 |               3 |       262 |              1 | 2004-03-10 | 2004-10-06 |
+| 2004-03-23 |               3 |       267 |              5 | 2004-03-10 | 2004-10-06 |
+| 2004-03-23 |               3 |       280 |              5 | 2004-03-10 | NULL       |
+| 2004-03-23 |               3 |       293 |              5 | 2004-03-10 | 2006-09-19 |
++------------+-----------------+-----------+----------------+------------+------------+
+9 rows in set (0.15 sec)
+```
+
+We don't care about multiple sector types because multiple sectors can be of the same type, so group the query to retain only an actor's sector types at a given date:
+
+```{mysql}
+SELECT event_date, source_actor_id, ds.sector_type_id
+FROM   simple_events se
+JOIN   dict_sector_mappings dsm ON dsm.actor_id = se.source_actor_id AND (dsm.start_date <= se.event_date OR dsm.start_date IS NULL) AND (dsm.end_date >= se.event_date OR dsm.end_date IS NULL)
+JOIN   dict_sectors ds ON ds.sector_id = dsm.sector_id
+WHERE  event_id = 7106109
+GROUP BY ds.sector_type_id;
+```
+
+```
++------------+-----------------+----------------+
+| event_date | source_actor_id | sector_type_id |
++------------+-----------------+----------------+
+| 2004-03-23 |               3 |              1 |
+| 2004-03-23 |               3 |              2 |
+| 2004-03-23 |               3 |              5 |
++------------+-----------------+----------------+
+3 rows in set (0.27 sec)
+```
+
+## Best query so far, but still problems
+
+Ok, that works. Does it work with multiple events?
+
+```{mysql}
+SELECT event_id, event_date, source_actor_id, ds.sector_type_id
+FROM   simple_events se
+JOIN   dict_sector_mappings dsm ON dsm.actor_id = se.source_actor_id AND (dsm.start_date <= se.event_date OR dsm.start_date IS NULL) AND (dsm.end_date >= se.event_date OR dsm.end_date IS NULL)
+JOIN   dict_sectors ds ON ds.sector_id = dsm.sector_id
+WHERE  event_id > 7106100 AND event_id < 7106110
+GROUP BY event_id, ds.sector_type_id;
+```
+
+```
++----------+------------+-----------------+----------------+
+| event_id | event_date | source_actor_id | sector_type_id |
++----------+------------+-----------------+----------------+
+|  7106101 | 2004-03-23 |           14954 |              1 |
+|  7106101 | 2004-03-23 |           14954 |              2 |
+|  7106101 | 2004-03-23 |           14954 |              5 |
+|  7106104 | 2004-03-23 |          140075 |              1 |
+|  7106104 | 2004-03-23 |          140075 |              2 |
+|  7106105 | 2004-03-23 |          136730 |              4 |
+|  7106105 | 2004-03-23 |          136730 |              5 |
+|  7106106 | 2004-03-23 |           27092 |              2 |
+|  7106106 | 2004-03-23 |           27092 |              5 |
+|  7106107 | 2004-03-23 |           27092 |              2 |
+|  7106107 | 2004-03-23 |           27092 |              5 |
+|  7106109 | 2004-03-23 |               3 |              1 |
+|  7106109 | 2004-03-23 |               3 |              2 |
+|  7106109 | 2004-03-23 |               3 |              5 |
++----------+------------+-----------------+----------------+
+14 rows in set (0.14 sec)
+```
+
+## Missing actor sector mappings
+
+This kind of works. I would start with the previous query to improve the existing quad query. 
+
+But...
+
+Why are some `event_id`'s not showing up? Like 7106102.
+
+```{mysql}
+select count(distinct source_actor_id) from simple_events;
+select count(distinct actor_id) from dict_sector_mappings;
+select count(distinct actor_id) from dict_sector_actor_mappings;
+```
+
+```
+# simple events
++---------------------------------+
+| count(distinct source_actor_id) |
++---------------------------------+
+|                           76372 |
++---------------------------------+
+1 row in set (13.37 sec)
+
+# dict_sector_mappings
++--------------------------+
+| count(distinct actor_id) |
++--------------------------+
+|                   164064 |
++--------------------------+
+1 row in set (0.70 sec)
+
+# dict_sector_actor_mappings
++--------------------------+
+| count(distinct actor_id) |
++--------------------------+
+|                      678 |
++--------------------------+
+1 row in set (0.15 sec)
+```
+
+`dict_sector_mappings` does not map `actor_id` completely, some `actor_id` values are missing entries. Neither does `dict_sector_actor_mappings`. 
+
+Here is another query showing some more actor details for the same set of events. 
+
+```{mysql}
+select event_id, actor_id, name, is_country, is_individual, is_sector
+from dict_actors 
+join simple_events se ON se.source_actor_id = dict_actors.actor_id
+where event_id > 7106100 AND event_id < 7106110;
+```
+
+```
++----------+----------+----------------------+------------+---------------+-----------+
+| event_id | actor_id | name                 | is_country | is_individual | is_sector |
++----------+----------+----------------------+------------+---------------+-----------+
+|  7106101 |    14954 | Arturas Paulauskas   |          0 |             1 |         0 |
+|  7106102 |    31492 | Japan                |          1 |             0 |         0 |
+|  7106103 |    36456 | Lithuania            |          1 |             0 |         0 |
+|  7106104 |   140075 | Legislature (Greece) |          0 |             0 |      NULL |
+|  7106105 |   136730 | Citizen (Australia)  |          0 |             1 |      NULL |
+|  7106106 |    27092 | Li Zhauxing          |          0 |             1 |         0 |
+|  7106107 |    27092 | Li Zhauxing          |          0 |             1 |         0 |
+|  7106108 |    34533 | North Korea          |          1 |             0 |         0 |
+|  7106109 |        3 | Minister Thanajaro   |          0 |             1 |         0 |
++----------+----------+----------------------+------------+---------------+-----------+
+9 rows in set (0.26 sec)
+```
+
+The events with ID ending in 2, 3, and 8 are missing from the table produced by the query above that I was hopeful about. It looks like actors who are countries are not in `dict_sector_actor_mapping`. 
+
+## Back to partial solution for the quad query
+
+To make life a little easier, I added a table that we can use to get the quad categories. So it doesn't have to be done in R, as I have in the git repo code. 
+
+```{mysql}
+CREATE TABLE cameo2quad (
+cameo varchar(2),
+quad  varchar(5)
+);
+
+INSERT INTO cameo2quad 
+  (cameo, quad)
+VALUES 
+  ('01', 'vccop'), ('02', 'vcoop'), ('03', 'vcoop'), ('04', 'vcoop'), ('05', 'vcoop'),
+  ('06', 'mcoop'), ('07', 'mcoop'), ('08', 'mcoop'), 
+  ('09', 'vconf'), ('10', 'vconf'), ('11', 'vconf'), ('12', 'vconf'), ('13', 'vconf'), 
+  ('14', 'mconf'), ('15', 'mconf'), ('16', 'mconf'), ('17', 'mconf'), ('18', 'mconf'), ('19', 'mconf'), ('20', 'mconf');
+
+SELECT event_id, event_date, c.cowcode, c2q.quad,
+       source_actor_id, src_ds.sector_type_id AS source_sector_type
+FROM   simple_events se
+# quad category
+JOIN   eventtypes t USING(eventtype_id)
+JOIN   cameo2quad c2q ON c2q.cameo = Substring(t.code, 1, 2)
+# country info
+JOIN   locations l USING(location_id)
+JOIN   countries c ON c.id = l.country_id
+# source sector type
+JOIN   dict_sector_mappings src_dsm ON src_dsm.actor_id = se.source_actor_id AND (src_dsm.start_date <= se.event_date OR src_dsm.start_date IS NULL) AND (src_dsm.end_date >= se.event_date OR src_dsm.end_date IS NULL)
+JOIN   dict_sectors src_ds ON src_ds.sector_id = src_dsm.sector_id
+# filters
+WHERE  event_id > 7106100 AND event_id < 7106110
+  # domestic events only
+  AND  se.source_country_id = se.target_country_id
+GROUP BY event_id, src_ds.sector_type_id;
+```
+
+```
++----------+------------+---------+-------+-----------------+--------------------+
+| event_id | event_date | cowcode | quad  | source_actor_id | source_sector_type |
++----------+------------+---------+-------+-----------------+--------------------+
+|  7106101 | 2004-03-23 |     740 | vccop |           14954 |                  1 |
+|  7106101 | 2004-03-23 |     740 | vccop |           14954 |                  2 |
+|  7106101 | 2004-03-23 |     740 | vccop |           14954 |                  5 |
+|  7106104 | 2004-03-23 |     350 | vcoop |          140075 |                  1 |
+|  7106104 | 2004-03-23 |     350 | vcoop |          140075 |                  2 |
+|  7106105 | 2004-03-23 |     900 | vconf |          136730 |                  4 |
+|  7106105 | 2004-03-23 |     900 | vconf |          136730 |                  5 |
+|  7106109 | 2004-03-23 |     800 | vcoop |               3 |                  1 |
+|  7106109 | 2004-03-23 |     800 | vcoop |               3 |                  2 |
+|  7106109 | 2004-03-23 |     800 | vcoop |               3 |                  5 |
++----------+------------+---------+-------+-----------------+--------------------+
+10 rows in set (0.15 sec)
+```
+
+This works but is at the event level, i.e. each row is an event. We can't throw other conditions into the GROUP BY clause because we want counts at the country-date level of aggregation, but for this query to get the correct sector types we need to group on the basis of events. Here's a first cut at solving this problem by throwing the whole query into a subquery, and doing the country-date level aggregation in and outer query. This is probably not super efficient. 
+
+```{mysql}
+SELECT cowcode, event_date, quad, source_sector_type, count(*) AS events
+FROM (
+  # start subquery
+  
+  SELECT event_id, event_date, c.cowcode, c2q.quad,
+         source_actor_id, src_ds.sector_type_id AS source_sector_type
+  FROM   simple_events se
+  
+  # quad category
+  JOIN   eventtypes t USING(eventtype_id)
+  JOIN   cameo2quad c2q ON c2q.cameo = Substring(t.code, 1, 2)
+  
+  # country info
+  JOIN   locations l USING(location_id)
+  JOIN   countries c ON c.id = l.country_id
+  
+  # source sector type
+  JOIN   dict_sector_mappings src_dsm 
+         ON src_dsm.actor_id = se.source_actor_id 
+         AND (src_dsm.start_date <= se.event_date OR src_dsm.start_date IS NULL) 
+         AND (src_dsm.end_date >= se.event_date OR src_dsm.end_date IS NULL)
+  JOIN   dict_sectors src_ds 
+         ON src_ds.sector_id = src_dsm.sector_id
+  
+  # filters
+  # for test events only
+  WHERE event_id > 7106100 AND event_id < 7106110
+  # domestic events only
+  AND  se.source_country_id = se.target_country_id
+  
+  # eliminate duplicate sector types for a given event
+  GROUP BY event_id, src_ds.sector_type_id) q
+  
+  # end subquery
+
+# group again to get quad counts
+GROUP BY cowcode, quad, source_sector_type, event_date;
+```
+
+```
++---------+------------+-------+--------------------+--------+
+| cowcode | event_date | quad  | source_sector_type | events |
++---------+------------+-------+--------------------+--------+
+|     350 | 2004-03-23 | vcoop |                  1 |      1 |
+|     350 | 2004-03-23 | vcoop |                  2 |      1 |
+|     740 | 2004-03-23 | vccop |                  1 |      1 |
+|     740 | 2004-03-23 | vccop |                  2 |      1 |
+|     740 | 2004-03-23 | vccop |                  5 |      1 |
+|     800 | 2004-03-23 | vcoop |                  1 |      1 |
+|     800 | 2004-03-23 | vcoop |                  2 |      1 |
+|     800 | 2004-03-23 | vcoop |                  5 |      1 |
+|     900 | 2004-03-23 | vconf |                  4 |      1 |
+|     900 | 2004-03-23 | vconf |                  5 |      1 |
++---------+------------+-------+--------------------+--------+
+10 rows in set (0.15 sec)
+```
+
+That seems correct. We wouldn't expect `events` to be $>1$ since we are only doing this with a limited number of candidate events. 
+
+Now we can remove the filter on event ID to see how it works on the full data. 
+
+```{mysql}
+# strip this subquery to bare bones
+
+  SELECT event_id, event_date, c.cowcode,
+         source_actor_id, src_ds.sector_type_id AS source_sector_type
+  FROM   simple_events se
+  
+  # quad category
+  JOIN   eventtypes t USING(eventtype_id)
+  JOIN   cameo2quad c2q ON c2q.cameo = Substring(t.code, 1, 2)
+  
+  # country info
+  JOIN   locations l USING(location_id)
+  JOIN   countries c ON c.id = l.country_id
+  
+  # source sector type
+  JOIN   dict_sector_mappings src_dsm 
+         ON src_dsm.actor_id = se.source_actor_id 
+         AND (src_dsm.start_date <= se.event_date OR src_dsm.start_date IS NULL) 
+         AND (src_dsm.end_date >= se.event_date OR src_dsm.end_date IS NULL)
+  JOIN   dict_sectors src_ds 
+         ON src_ds.sector_id = src_dsm.sector_id
+  
+  # filters
+  # domestic events only
+  AND  se.source_country_id = se.target_country_id
+  
+  # eliminate duplicate sector types for a given event
+  GROUP BY event_id, src_ds.sector_type_id 
+
+
+
+SELECT cowcode, event_date, quad, source_sector_type, count(*) AS events
+FROM (
+  # start subquery
+  
+  SELECT event_id, event_date, c.cowcode, c2q.quad,
+         source_actor_id, src_ds.sector_type_id AS source_sector_type
+  FROM   simple_events se
+  
+  # quad category
+  JOIN   eventtypes t USING(eventtype_id)
+  JOIN   cameo2quad c2q ON c2q.cameo = Substring(t.code, 1, 2)
+  
+  # country info
+  JOIN   locations l USING(location_id)
+  JOIN   countries c ON c.id = l.country_id
+  
+  # source sector type
+  JOIN   dict_sector_mappings src_dsm 
+         ON src_dsm.actor_id = se.source_actor_id 
+         AND (src_dsm.start_date <= se.event_date OR src_dsm.start_date IS NULL) 
+         AND (src_dsm.end_date >= se.event_date OR src_dsm.end_date IS NULL)
+  JOIN   dict_sectors src_ds 
+         ON src_ds.sector_id = src_dsm.sector_id
+  
+  # filters
+  # domestic events only
+  AND  se.source_country_id = se.target_country_id
+  
+  # eliminate duplicate sector types for a given event
+  GROUP BY event_id, src_ds.sector_type_id 
+  
+  ) q
+  # end subquery
+
+# group again to get quad counts
+GROUP BY cowcode, quad, source_sector_type, event_date
+LIMIT 10;
+```
+
+```
+```
+
+This takes more than a few minutes for 10 results. Ugh. 
+
+Not very efficient. Maybe moving some of the joins to the outer query helps, we don't really need the quad category or country at the event level when we are dealing with identifying the sector types. Or create a table with the part of the inner query that does the event-sector type mapping, build indices for it, and then do the rest of the joins and query. That should be even faster.

@@ -5,6 +5,12 @@ date: "November 24, 2014"
 output: html_document
 ---
 
+------
+
+**Note:** The quad query below has a problem. It deals with `dict_sector_mappings` as if one actor corresponds to one sector, but this is not the case. Actors can change sector membership over time, e.g. if a politician is elected to office, and probably belong to multiple sectors at the same time. The notes in `actor_sector_mappings.Rmd` work towards, but don't include an actual, solution to this. 
+
+------
+
 # Quad variables
 
 Monthly counts, by country, of verbal conflict, material conflict, verbal cooperation, and material cooperation events. The output includes a correction to match the G\&W state system membership codes.
